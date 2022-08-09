@@ -11,6 +11,7 @@ let
   ;
   inherit (pkgs.lib)
     concatStringsSep
+    attrByPath
   ;
 
   ##
@@ -20,84 +21,93 @@ let
 
   ##
 
-  lisp = {
-    env = writeText "env.lisp" ''
-      (require "asdf")
-      (let* ((root (sb-ext:posix-getenv "PROJECT_ROOT"))
-             (root-abs (car (directory root))))
-        (push root-abs asdf:*central-registry*))
-    '';
+  lisp = let
+    scripts = let
+      getenv = concatStringsSep " " [
+        "#+sbcl sb-ext:posix-getenv"
+        "#+clozure ccl:getenv"
+      ];
+    in {
+      env = writeText "env.lisp" ''
+        (require "asdf")
+        (let* ((root (pathname-directory (${getenv} "PROJECT_ROOT"))))
+          (push root asdf:*central-registry*))
+      '';
 
-    bootstrap = "${fetchFromGitHub {
-      owner = "quicklisp";
-      repo = "quicklisp-bootstrap";
-      rev = "37cff6b7cf91a6260db2a4831d183d8ff696d91d";
-      sha256 = "sha256-nJWAZILuYVcckjbDssEkFkL24sW5/NxcBa+KL8YpaXc=";
-    }}/quicklisp.lisp";
+      bootstrap = "${fetchFromGitHub {
+        owner = "quicklisp";
+        repo = "quicklisp-bootstrap";
+        rev = "37cff6b7cf91a6260db2a4831d183d8ff696d91d";
+        sha256 = "sha256-nJWAZILuYVcckjbDssEkFkL24sW5/NxcBa+KL8YpaXc=";
+      }}/quicklisp.lisp";
 
-    init = writeText "init.lisp" ''
-      (load #p"${lisp.bootstrap}")
+      init = writeText "init.lisp" ''
+        (load #p"${scripts.bootstrap}")
 
-      (let* ((root (sb-ext:posix-getenv "PROJECT_ROOT"))
-             (root-abs (car (directory root)))
-             (ql-root-abs (merge-pathnames "vendor" root-abs)))
-        (when (not (probe-file ql-root-abs))
-          (quicklisp-quickstart:install :path ql-root-abs)))
-    '';
+        (let* ((root (pathname-directory (${getenv} "PROJECT_ROOT")))
+               (ql-root (merge-pathnames "vendor" root)))
+          (when (not (probe-file ql-root))
+            (quicklisp-quickstart:install :path ql-root)))
+      '';
 
-    slynk = writeText "slynk.lisp" ''
-      (ql:quickload :slynk)
-      (setf slynk::*loopback-interface* "127.0.0.1")
-      (slynk:create-server :port 4005 :style :spawn)
-      (loop while t do (sleep 1))
-    '';
-  };
+      slynk = writeText "slynk.lisp" ''
+        (ql:quickload :slynk)
+        (setf slynk::*loopback-interface* "127.0.0.1")
+        (slynk:create-server :port 4005 :style :spawn)
+        (loop while t do (sleep 1))
+      '';
+    };
 
-  ##
+    mkLisp = name: let
+      pkg = pkgs.${name};
+      cli = {
+        # different implementations support different CLI flags
+        # this attrset is about to smooth the difference
+        load = attrByPath [name] "--load" {};
+        eval = attrByPath [name] "--eval" {};
+      };
 
-  packages = with pkgs.lispPackages; [
-    quicklisp-to-nix
-    quicklisp-to-nix-system-info
-  ];
+      wrapCommand = command: concatStringsSep " " [
+        command
+        ''${cli.load} "$PROJECT_ROOT/vendor/setup.lisp"''
+        ''${cli.load} "${scripts.env}"''
+      ];
 
-  sbcl-wrapped = let
-    wrapCommand = command: concatStringsSep " " [
-      command
-      ''--load "$PROJECT_ROOT/vendor/setup.lisp"''
-      ''--load "${lisp.env}"''
-    ];
+      wrapper = writeShellScriptBin name ''
+        set -e
+        if [ -z "$PROJECT_ROOT" ]
+        then
+          echo "PROJECT_ROOT env variable required" 1>&2
+          echo "It should point to the project VCS root" 1>&2
+          exit 1
+        fi
 
-    sbcl-wrapper = writeShellScriptBin "sbcl" ''
-      set -e
-      if [ -z "$PROJECT_ROOT" ]
-      then
-        echo "PROJECT_ROOT env variable required" 1>&2
-        echo "It should point to the project VCS root" 1>&2
-        exit 1
-      fi
+        if [ ! -f "$PROJECT_ROOT/vendor/setup.lisp" ]
+        then
+          ${pkg}/bin/${name} \
+                           ${cli.load} "${scripts.init}" \
+                           ${cli.eval} "(quit)"
+        fi
 
-      if [ ! -f "$PROJECT_ROOT/vendor/setup.lisp" ]
-      then
-        ${sbcl}/bin/sbcl \
-                         --load "${lisp.init}" \
-                         --eval "(quit)"
-      fi
+        exec ${wrapCommand "${pkg}/bin/${name}"} "$@"
+      '';
+      slynk = writeShellScriptBin "${name}-slynk" ''
+        set -e
+        exec ${wrapCommand "${pkg}/bin/${name}"} ${cli.load} "${scripts.slynk}"
+      '';
+    in symlinkJoin {
+      name = "sbcl";
+      paths = [
+        wrapper
+        slynk
+        pkg
+      ];
+    };
+  in {
+    # NOTE: tried ecl & clisp... don't want to support them, too much headache
 
-      exec ${wrapCommand "${sbcl}/bin/sbcl"} "$@"
-    '';
-    sbcl-slynk = writeShellScriptBin "sbcl-slynk" ''
-      set -e
-      exec ${wrapCommand "${sbcl}/bin/sbcl"} --load "${lisp.slynk}"
-    '';
-
-    sbcl = pkgs.sbcl;
-  in symlinkJoin {
-    name = "sbcl";
-    paths = [
-      sbcl-wrapper
-      sbcl-slynk
-      sbcl
-    ];
+    sbcl = mkLisp "sbcl";
+    ccl  = mkLisp "ccl";
   };
 
   ##
@@ -117,6 +127,11 @@ let
 
   ##
 
+  packages = with pkgs.lispPackages; [
+    quicklisp-to-nix
+    quicklisp-to-nix-system-info
+  ];
+
   env = mkDerivation rec {
     name = "shell";
     buildInputs = with pkgs; [
@@ -124,7 +139,9 @@ let
       nix cacert coreutils
       git
       rlwrap
-      sbcl-wrapped
+
+      lisp.sbcl
+      lisp.ccl
     ] ++ packages;
     shellHook = shell;
   };
