@@ -30,7 +30,7 @@ let
     in {
       env = writeText "env.lisp" ''
         (require "asdf")
-        (let* ((root (pathname-directory (${getenv} "PROJECT_ROOT"))))
+        (let* ((root (make-pathname :directory (${getenv} "PROJECT_ROOT"))))
           (push root asdf:*central-registry*))
       '';
 
@@ -44,7 +44,7 @@ let
       init = writeText "init.lisp" ''
         (load #p"${scripts.bootstrap}")
 
-        (let* ((root (pathname-directory (${getenv} "PROJECT_ROOT")))
+        (let* ((root (make-pathname :directory (${getenv} "PROJECT_ROOT")))
                (ql-root (merge-pathnames "vendor" root)))
           (when (not (probe-file ql-root))
             (quicklisp-quickstart:install :path ql-root)))
