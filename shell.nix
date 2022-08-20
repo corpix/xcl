@@ -56,6 +56,12 @@ let
         (slynk:create-server :port 4005 :style :spawn)
         (loop while t do (sleep 1))
       '';
+      swank = writeText "swank.lisp" ''
+        (ql:quickload :swank)
+        (setf swank::*loopback-interface* "127.0.0.1")
+        (swank:create-server :port 4005 :style :spawn)
+        (loop while t do (sleep 1))
+      '';
     };
 
     mkLisp = name: let
@@ -95,11 +101,16 @@ let
         set -e
         exec ${wrapCommand "${pkg}/bin/${name}"} ${cli.load} "${scripts.slynk}"
       '';
+      swank = writeShellScriptBin "${name}-swank" ''
+        set -e
+        exec ${wrapCommand "${pkg}/bin/${name}"} ${cli.load} "${scripts.swank}"
+      '';
     in symlinkJoin {
       name = "sbcl";
       paths = [
         wrapper
         slynk
+        swank
         pkg
       ];
     };
