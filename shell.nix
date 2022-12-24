@@ -99,11 +99,11 @@ let
       '';
       slynk = writeShellScriptBin "${name}-slynk" ''
         set -e
-        exec ${wrapCommand "${pkg}/bin/${name}"} ${cli.load} "${scripts.slynk}"
+        exec ${wrapper}/bin/${name} ${cli.load} "${scripts.slynk}"
       '';
       swank = writeShellScriptBin "${name}-swank" ''
         set -e
-        exec ${wrapCommand "${pkg}/bin/${name}"} ${cli.load} "${scripts.swank}"
+        exec ${wrapper}/bin/${name} ${cli.load} "${scripts.swank}"
       '';
     in symlinkJoin {
       name = "sbcl";
